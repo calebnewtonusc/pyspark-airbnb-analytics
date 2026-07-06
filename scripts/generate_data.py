@@ -1,10 +1,12 @@
 """Synthetic Inside-Airbnb-shaped data generator.
 
-Writes ``listings.csv`` and ``reviews.csv`` to ``data/raw`` so the analytics
-pipeline runs end to end with no external downloads. The real course dataset
-comes from ``data/download_data.sh`` (Inside Airbnb, London); this generator
-reproduces the same column shapes and quirks, most importantly the price string
-format ``$1,234.00`` that the pipeline must clean.
+This is an OPTIONAL offline fallback only. The default, documented data path is
+the real Inside Airbnb London open dataset fetched by ``scripts/download_data.sh``.
+Use this generator when you want to run the pipeline with no network access; it
+writes gzipped ``listings.csv.gz`` and ``reviews.csv.gz`` to ``data/raw`` (the
+same paths the pipeline reads by default), reproducing the real column shapes and
+quirks, most importantly the price string format ``$1,234.00`` that the pipeline
+must clean.
 
 Run with the project venv:
 
@@ -15,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gzip
 import random
 from datetime import date, timedelta
 from pathlib import Path
@@ -195,8 +198,8 @@ def generate_reviews(
 
 
 def _write_csv(path: Path, rows: list[dict[str, object]], columns: list[str]) -> None:
-    """Write dictionaries to a CSV with a fixed column order."""
-    with open(path, "w", newline="", encoding="utf-8") as handle:
+    """Write dictionaries to a gzipped CSV with a fixed column order."""
+    with gzip.open(path, "wt", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=columns, quoting=csv.QUOTE_MINIMAL)
         writer.writeheader()
         writer.writerows(rows)
@@ -219,8 +222,8 @@ def generate(listings_count: int, reviews_count: int, seed: int) -> tuple[Path, 
     listings = generate_listings(listings_count, rng)
     reviews = generate_reviews(listings, reviews_count, rng)
 
-    listings_path = RAW_DIR / "listings.csv"
-    reviews_path = RAW_DIR / "reviews.csv"
+    listings_path = RAW_DIR / "listings.csv.gz"
+    reviews_path = RAW_DIR / "reviews.csv.gz"
 
     _write_csv(
         listings_path,

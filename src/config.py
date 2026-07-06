@@ -34,8 +34,8 @@ class PipelineConfig:
         midrange_ceiling: Upper bound of the Mid-range price band.
     """
 
-    listings_path: str = str(PROJECT_ROOT / "data" / "raw" / "listings.csv")
-    reviews_path: str = str(PROJECT_ROOT / "data" / "raw" / "reviews.csv")
+    listings_path: str = str(PROJECT_ROOT / "data" / "raw" / "listings.csv.gz")
+    reviews_path: str = str(PROJECT_ROOT / "data" / "raw" / "reviews.csv.gz")
     gold_path: str = str(PROJECT_ROOT / "data" / "gold")
     app_name: str = "airbnb-analytics"
     shuffle_partitions: int = 8

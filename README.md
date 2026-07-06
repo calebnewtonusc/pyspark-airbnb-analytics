@@ -1,15 +1,15 @@
 # PySpark Airbnb Analytics
 
-A production-style PySpark batch analytics pipeline over Airbnb listings and reviews. It reads raw listings and reviews from CSV, cleans and enriches the data, and produces a set of gold-layer analytics tables written as partitioned parquet. The project is the applied version of the ZTM Data Engineering course section "Data Processing with Spark": it implements the same techniques the course exercises teach (reading Inside Airbnb data, cleaning the currency-formatted price field, aggregation functions, inner and left-anti joins, Spark SQL over temporary views, window functions, and Python UDFs) but wraps them in a config-driven, tested, runnable pipeline.
+A production-style PySpark batch analytics pipeline over the real Airbnb listings and reviews for London. It reads the raw listings and reviews CSVs, cleans and enriches the data, and produces a set of gold-layer analytics tables written as partitioned parquet. The project is the applied version of the ZTM Data Engineering course section "Data Processing with Spark": it implements the same techniques the course exercises teach (reading Inside Airbnb data, cleaning the currency-formatted price field, aggregation functions, inner and left-anti joins, Spark SQL over temporary views, window functions, and Python UDFs) but wraps them in a config-driven, tested, runnable pipeline.
 
-The pipeline ships with a synthetic data generator that produces Inside-Airbnb-shaped data, so it runs end to end with zero external downloads. Point it at the real London dataset instead by swapping the paths in the config.
+It runs on the real Inside Airbnb London open dataset, the 2024-09-06 snapshot (the one the ZTM course uses), sourced from https://insideairbnb.com/get-the-data/. The raw files are large gzipped CSVs (about 96,000 listings and 1.9 million reviews) and are gitignored, so you download them once with `scripts/download_data.sh` before running the pipeline. A synthetic data generator is kept as an optional offline fallback for running without network access.
 
 ## Architecture
 
 ```mermaid
 flowchart LR
-    A[Synthetic generator<br/>scripts/generate_data.py] -->|listings.csv, reviews.csv| B[(data/raw)]
-    B --> C[Read with explicit schema<br/>src/pipeline.py]
+    A[Inside Airbnb London 2024-09-06<br/>scripts/download_data.sh] -->|listings.csv.gz, reviews.csv.gz| B[(data/raw)]
+    B --> C[Read all-string, project + cast by name<br/>src/pipeline.py]
     C --> D[Clean listings<br/>parse price string, filter range]
     D --> E[Enrich<br/>price category band]
     E --> F{Gold aggregations}
@@ -37,13 +37,15 @@ flowchart LR
 
 ## Dataset
 
-The pipeline works on two tables shaped like the Inside Airbnb London export used in the course.
+The pipeline reads the real Inside Airbnb London open dataset, the 2024-09-06 snapshot, from https://insideairbnb.com/get-the-data/. The raw listings file is a wide CSV with roughly 75 columns whose text fields contain embedded newlines, commas, and quotes; the pipeline reads every column as a string with the header on (no inference scan) and then projects and casts only the fields it consumes, selecting by name so nothing misaligns.
+
+Columns the pipeline consumes.
 
 Listings (one row per property):
 
 - id, name, host_id, host_name
 - neighbourhood_cleansed, room_type, property_type
-- price (a currency string such as `$1,234.00` that the pipeline must parse)
+- price (a currency string such as `$1,200.00` that the pipeline must parse)
 - minimum_nights, number_of_reviews, reviews_per_month
 - review_scores_rating, review_scores_location, first_review
 
@@ -51,11 +53,27 @@ Reviews (one row per review):
 
 - listing_id, id, date, reviewer_id, reviewer_name, comments
 
-The generator writes roughly 8,000 listings and 120,000 reviews by default, including listings with no reviews and a fraction of listings whose price fails to parse, so the cleaning stage has real work to do. The real course dataset can be fetched with the course script `02-data-processing-with-spark/data/download_data.sh`, which downloads the Inside Airbnb London CSV files over the network.
+The real snapshot has about 96,000 listings and 1.9 million reviews. It includes listings with no reviews and listings whose price is missing or unparseable, so the cleaning stage has real work to do; after price parsing and the plausible-range filter, 63,184 listings remain.
+
+Download the data (macOS ships `curl`, not `wget`):
+
+```sh
+bash scripts/download_data.sh
+```
+
+Or by hand:
+
+```sh
+mkdir -p data/raw
+curl -L -o data/raw/listings.csv.gz https://data.insideairbnb.com/united-kingdom/england/london/2024-09-06/data/listings.csv.gz
+curl -L -o data/raw/reviews.csv.gz  https://data.insideairbnb.com/united-kingdom/england/london/2024-09-06/data/reviews.csv.gz
+```
+
+The files are gitignored, so they are never committed. An optional synthetic generator, `scripts/generate_data.py`, writes the same-shaped gzipped files to `data/raw` for offline or demo runs when you have no network access.
 
 ## What the pipeline demonstrates
 
-- Explicit `StructType` schemas instead of inference, for stable, fast reads.
+- Reading the wide, quote-and-newline-heavy Inside Airbnb CSVs with `multiLine`, `quote`, and `escape` options, then projecting and casting the consumed columns by name so a ~75-column source cannot misalign.
 - Price cleaning with `regexp_replace` to strip `$` and `,` before casting to double, exactly the transformation the course teaches.
 - A `when`/`otherwise` price-band expression plus a Python UDF for review sentiment scoring.
 - Aggregations: average price and rating per neighbourhood, listing counts per price band, reviews per listing.
@@ -76,11 +94,13 @@ export PYSPARK_PYTHON="/Users/joelnewton/Desktop/Data Engineering/.venv/bin/pyth
 export PYSPARK_DRIVER_PYTHON="/Users/joelnewton/Desktop/Data Engineering/.venv/bin/python"
 ```
 
-Step 1, generate the data:
+Step 1, download the real data:
 
 ```sh
-python scripts/generate_data.py --listings 8000 --reviews 120000
+bash scripts/download_data.sh
 ```
+
+(Offline fallback: `python scripts/generate_data.py --listings 8000 --reviews 120000` writes synthetic same-shaped gzipped files instead.)
 
 Step 2, run the pipeline:
 
@@ -98,17 +118,31 @@ Gold tables land under `data/gold/`. The cleaned listings fact is partitioned by
 
 ## Sample output
 
+Real results from the Inside Airbnb London 2024-09-06 snapshot. The raw source has about 96,182 listings and 1,887,519 reviews; after price parsing and the plausible-range filter, 63,184 listings remain across 33 neighbourhoods, of which 14,430 have never been reviewed.
+
+Gold table row counts:
+
+```
+listings_clean: 63184 rows
+price_by_neighbourhood: 33 rows
+top_reviewed_listings: 20 rows
+listings_without_reviews: 14430 rows
+price_category_summary: 3 rows
+sentiment_by_neighbourhood: 33 rows
+top_comment_length: 20 rows
+```
+
 Average price by neighbourhood (top 5):
 
 ```
 +----------------------+-------------+---------+---------+---------+----------+----------+
 |neighbourhood_cleansed|listing_count|avg_price|min_price|max_price|avg_rating|price_rank|
 +----------------------+-------------+---------+---------+---------+----------+----------+
-|Kensington and Chelsea|543          |135.48   |20.99    |697.34   |4.27      |1         |
-|Southwark             |568          |132.10   |22.70    |690.30   |4.27      |2         |
-|Newham                |580          |130.11   |15.00    |569.00   |4.23      |3         |
-|Camden                |583          |129.22   |20.25    |634.25   |4.28      |4         |
-|Ealing                |562          |129.01   |19.74    |591.73   |4.25      |5         |
+|Westminster           |8074         |313.27   |19.0     |9680.0   |4.6       |1         |
+|Kensington and Chelsea|4774         |309.67   |30.0     |8000.0   |4.65      |2         |
+|City of London        |421          |268.85   |38.0     |5000.0   |4.53      |3         |
+|Camden                |4322         |205.91   |12.0     |8000.0   |4.62      |4         |
+|Hammersmith and Fulham|2659         |192.57   |25.0     |5000.0   |4.68      |5         |
 +----------------------+-------------+---------+---------+---------+----------+----------+
 ```
 
@@ -118,9 +152,9 @@ Listing count by price band:
 +--------------+-------------+---------+----------+
 |price_category|listing_count|avg_price|avg_rating|
 +--------------+-------------+---------+----------+
-|Mid-range     |4831         |93.03    |4.25      |
-|Luxury        |2313         |231.62   |4.25      |
-|Budget        |856          |39.55    |4.25      |
+|Mid-range     |29562        |94.11    |4.66      |
+|Luxury        |27634        |318.37   |4.68      |
+|Budget        |5988         |39.41    |4.67      |
 +--------------+-------------+---------+----------+
 ```
 
@@ -130,11 +164,11 @@ Average review sentiment by neighbourhood (top 5):
 +----------------------+------------+-------------+
 |neighbourhood_cleansed|review_count|avg_sentiment|
 +----------------------+------------+-------------+
-|Southwark             |8420        |0.716        |
-|Lambeth               |8778        |0.713        |
-|Ealing                |8433        |0.711        |
-|Greenwich             |8586        |0.711        |
-|Wandsworth            |8422        |0.706        |
+|Richmond upon Thames  |28780       |1.835        |
+|Kingston upon Thames  |11561       |1.713        |
+|Bromley               |11243       |1.656        |
+|Wandsworth            |67338       |1.654        |
+|Hammersmith and Fulham|67986       |1.635        |
 +----------------------+------------+-------------+
 ```
 
@@ -142,9 +176,10 @@ Average review sentiment by neighbourhood (top 5):
 
 ```
 pyspark-airbnb-analytics/
-  scripts/generate_data.py     Synthetic Inside-Airbnb-shaped data generator
+  scripts/download_data.sh     Download the real Inside Airbnb London dataset
+  scripts/generate_data.py     Optional synthetic offline fallback generator
   src/config.py                Dataclass configuration, optional YAML overlay
-  src/schema.py                Explicit listings and reviews schemas
+  src/schema.py                Consumed-column projection and target types
   src/transforms.py            Pure DataFrame transformations
   src/pipeline.py              End-to-end job and CLI entrypoint
   tests/test_transforms.py     pytest unit tests on a local SparkSession

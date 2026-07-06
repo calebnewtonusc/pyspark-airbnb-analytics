@@ -22,9 +22,10 @@ os.environ.setdefault("PYSPARK_PYTHON", sys.executable)
 os.environ.setdefault("PYSPARK_DRIVER_PYTHON", sys.executable)
 
 from pyspark.sql import DataFrame, SparkSession  # noqa: E402
+from pyspark.sql import functions as F  # noqa: E402
 
 from .config import PipelineConfig, load_config  # noqa: E402
-from .schema import LISTINGS_SCHEMA, REVIEWS_SCHEMA  # noqa: E402
+from .schema import LISTINGS_COLUMNS, REVIEWS_COLUMNS  # noqa: E402
 from .transforms import (  # noqa: E402
     add_price_category,
     clean_listings,
@@ -58,28 +59,45 @@ def build_spark(config: PipelineConfig) -> SparkSession:
     return spark
 
 
-def _read_csv(spark: SparkSession, path: str, schema) -> DataFrame:
-    """Read an Inside-Airbnb-style CSV with the reader options the course uses."""
-    return spark.read.csv(
-        path,
-        header=True,
-        schema=schema,
-        sep=",",
-        quote='"',
-        escape='"',
-        multiLine=True,
-        mode="PERMISSIVE",
+def _read_csv(spark: SparkSession, path: str, columns: dict[str, str]) -> DataFrame:
+    """Read a real Inside Airbnb (gzipped) CSV and project the needed columns.
+
+    The real exports are wide CSVs (the listings file has ~75 columns) whose text
+    fields carry embedded newlines, commas, and quotes. Reading them with a
+    positional ``StructType`` would misalign columns, so every field is read as a
+    string with ``header`` on and no inference scan, using the multiLine, quote,
+    and escape options the malformed-record-tolerant reader needs. The wanted
+    columns are then selected by name and cast to their target types. Spark reads
+    the ``.gz`` files transparently by file extension.
+
+    Args:
+        spark: Active SparkSession.
+        path: Path to the (optionally gzipped) CSV file.
+        columns: Mapping of column name to target Spark type name.
+
+    Returns:
+        A DataFrame with exactly ``columns`` projected and cast.
+    """
+    raw = (
+        spark.read.option("header", True)
+        .option("multiLine", True)
+        .option("quote", '"')
+        .option("escape", '"')
+        .option("mode", "PERMISSIVE")
+        .csv(path)
     )
+    projected = [F.col(name).cast(type_name).alias(name) for name, type_name in columns.items()]
+    return raw.select(*projected)
 
 
 def read_listings(spark: SparkSession, config: PipelineConfig) -> DataFrame:
-    """Read the raw listings CSV with an explicit schema."""
-    return _read_csv(spark, config.listings_path, LISTINGS_SCHEMA)
+    """Read the raw listings CSV and project the columns the pipeline consumes."""
+    return _read_csv(spark, config.listings_path, LISTINGS_COLUMNS)
 
 
 def read_reviews(spark: SparkSession, config: PipelineConfig) -> DataFrame:
-    """Read the raw reviews CSV with an explicit schema."""
-    return _read_csv(spark, config.reviews_path, REVIEWS_SCHEMA)
+    """Read the raw reviews CSV and project the columns the pipeline consumes."""
+    return _read_csv(spark, config.reviews_path, REVIEWS_COLUMNS)
 
 
 def top_comment_length_sql(
